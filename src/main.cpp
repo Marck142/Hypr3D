@@ -26,7 +26,10 @@
 #include <hyprland/src/render/pass/PassElement.hpp>
 #include <hyprland/src/render/gl/GLFramebuffer.hpp>
 #include <hyprland/src/output/Monitor.hpp>
-#include <hyprland/src/desktop/view/Window.hpp>
+#include <hyprland/src/desktop/view/window/Window.hpp>
+#include <hyprland/src/desktop/view/window/WindowPresentation.hpp>
+#include <hyprland/src/layout/target/Target.hpp>
+#include <hyprland/src/render/Context.hpp>
 #include <hyprland/src/managers/SeatManager.hpp>
 #include <hyprland/src/managers/eventLoop/EventLoopManager.hpp>
 #include <hyprland/src/managers/fullscreen/FullscreenController.hpp>
@@ -1158,6 +1161,7 @@ static void damageCurrentMonitor() {
 }
 
 static PHLMONITOR g_currentRenderMon = nullptr;
+static Render::CRenderContext* g_currentRenderContext = nullptr;
 static bool       g_roomDrawnThisFrame = false; // see onRenderStage
 
 // The monitor the 3D view is built for: configured monitor, or focused monitor,
@@ -1337,7 +1341,7 @@ static void ghostWindows(
         // coordinates: centre on this monitor, not on the layout origin
         // (which belongs to whichever monitor sits at 0,0, or none at all).
         // A dialog (a window with a parent) keeps the size it asked for.
-        if (info.window && !info.window->parent()) {
+        if (info.window && !info.window->backend().parent()) {
             const double CX =
                 mon->m_position.x + mon->m_size.x * 0.5 - g_cfgSpawnWidth * 0.5;
             const double CY =
@@ -1390,9 +1394,9 @@ static void unghostWindows() {
         // screen; a pre-existing tiled window must return to its tile.
         // User-initiated floats during the session are not in the set.
         if (g_flagFloated.count(save.id) && !save.wasFloating)
-            if (auto W = save.window.lock(); W && W->m_target &&
-                                             W->m_target->floating())
-                W->m_target->setFloating(false);
+            if (auto W = save.window.lock(); W && W->layoutTarget() &&
+                                             W->layoutTarget()->floating())
+                W->layoutTarget()->setFloating(false);
     }
 
     Compat::restoreWindowLayoutSettle(g_layoutSaves);
@@ -1532,13 +1536,13 @@ static void refreshCaptures(
         const auto NOW = std::chrono::steady_clock::now();
 
         const bool FADING = info.window &&
-            (info.window->alpha(Desktop::View::WINDOW_ALPHA_ACTIVE)
+            (info.window->presentation().alpha(Desktop::View::WINDOW_ALPHA_ACTIVE)
                  ->isBeingAnimated() ||
-                info.window->alpha(Desktop::View::WINDOW_ALPHA_FADE)
+                info.window->presentation().alpha(Desktop::View::WINDOW_ALPHA_FADE)
                  ->isBeingAnimated() ||
-                info.window->alpha(Desktop::View::WINDOW_ALPHA_FULLSCREEN)
+                info.window->presentation().alpha(Desktop::View::WINDOW_ALPHA_FULLSCREEN)
                  ->isBeingAnimated() ||
-                info.window->m_borderFadeAnimationProgress->isBeingAnimated());
+                false);
 
         if (FADING)
             alphaGrace[info.id] = NOW + std::chrono::milliseconds(200);
@@ -1828,7 +1832,7 @@ static void syncWorld(const PHLMONITOR& mon, float dt) {
         // the primary source lives in the capture layer.
         if (!info.isLayer && info.window) {
             const float R = std::max(
-                0.0f, info.window->rounding() +
+                0.0f, info.window->presentation().rounding() +
                           static_cast<float>(SNAPSHOT->surfaceOffset.x));
 
             auto& C = g_winOutlines[info.id];
@@ -1917,10 +1921,10 @@ static void syncWorld(const PHLMONITOR& mon, float dt) {
             entity.pitch  = POSE->second.pitch;
             entity.roll   = POSE->second.roll;
         }
-        else if (info.window && info.window->parent() &&
-                 !g_world.find(Compat::windowId(info.window->parent())) &&
+        else if (info.window && info.window->backend().parent() &&
+                 !g_world.find(Compat::windowId(info.window->backend().parent())) &&
                  std::any_of(INFOS.begin(), INFOS.end(), [&](const auto& I) {
-                     return I.id == Compat::windowId(info.window->parent());
+                     return I.id == Compat::windowId(info.window->backend().parent());
                  })) {
             // Its parent is new to the room too (both mapped this frame):
             // wait a frame for the parent's pose instead of spawning at the
@@ -1928,8 +1932,8 @@ static void syncWorld(const PHLMONITOR& mon, float dt) {
             continue;
         }
         else if (const auto* DIALOG_PARENT =
-                     info.window && info.window->parent()
-                         ? g_world.find(Compat::windowId(info.window->parent()))
+                     info.window && info.window->backend().parent()
+                         ? g_world.find(Compat::windowId(info.window->backend().parent()))
                          : nullptr) {
             // A dialog (file chooser, preferences) opens just in front of the
             // window that asked for it, facing the same way.
@@ -2355,8 +2359,8 @@ static void startTo2D(const PHLWINDOW& window, bool captureRestoreBox) {
         CBox       RESTORE = IT != g_fsStableBoxes.end() ?
             IT->second : Compat::currentWindowBox(window);
 
-        if (IT == g_fsStableBoxes.end() && window->m_target) {
-            const auto LF = window->m_target->lastFloatingSize();
+        if (IT == g_fsStableBoxes.end() && window->layoutTarget()) {
+            const auto LF = window->layoutTarget()->lastFloatingSize();
 
             if (LF.x > 5.0 && LF.y > 5.0)
                 RESTORE = CBox{RESTORE.x, RESTORE.y, LF.x, LF.y};
@@ -2374,8 +2378,8 @@ static void startTo2D(const PHLWINDOW& window, bool captureRestoreBox) {
     // the transition's per-frame setWindowBox calls would otherwise
     // re-member intermediate (up to monitor-sized) values, and Hyprland's
     // own FS-exit applies that memory.
-    if (window->m_target)
-        window->m_target->rememberFloatingSize(
+    if (window->layoutTarget())
+        window->layoutTarget()->rememberFloatingSize(
             {g_fsRestoreBox.w, g_fsRestoreBox.h});
 
     // The screen-covering distance derives from the vertical FOV and the
@@ -2465,7 +2469,7 @@ static void damageWindowsWithLiveAlpha(const PHLMONITOR& mon) {
             continue;
 
         const auto IN_FLIGHT = [&](Desktop::View::eWindowAlpha channel) {
-            return W->alphaValue(channel) != W->alphaGoal(channel);
+            return W->presentation().alphaValue(channel) != W->presentation().alphaGoal(channel);
         };
 
         if (IN_FLIGHT(Desktop::View::WINDOW_ALPHA_FADE) ||
@@ -2680,7 +2684,7 @@ static void applyFullscreenAnimation() {
             // Hyprland's remembered floating size with intermediate (up to
             // monitor-sized) values. Re-pin the captured PRE-FS size.
             if (auto W2 = g_fsWindow.lock())
-                W2->m_target->rememberFloatingSize(
+                W2->layoutTarget()->rememberFloatingSize(
                     {g_fsRestoreBox.w, g_fsRestoreBox.h});
 
             if (Compat::setCursorHidden(false) && g_pHyprRenderer)
@@ -2725,8 +2729,8 @@ static void applyFullscreenAnimation() {
                              Desktop::windowState()->windows()) {
                             if (W3 && W3->m_workspace ==
                                           MON->m_activeWorkspace &&
-                                !W3->m_pinned)
-                                *W3->alpha(
+                                !(W3->m_state & Desktop::View::WINDOW_STATE_PINNED))
+                                *W3->presentation().alpha(
                                      Desktop::View::WINDOW_ALPHA_FULLSCREEN) =
                                     1.F;
                         }
@@ -4367,10 +4371,10 @@ static void update3D(float dt) {
                     continue;
                 }
 
-                if (ID == g_fsCurrentId || !W->m_target)
+                if (ID == g_fsCurrentId || !W->layoutTarget())
                     continue;
 
-                const bool FLOATING = W->m_target->floating();
+                const bool FLOATING = W->layoutTarget()->floating();
 
                 if (FLOATING && !g_boxDriven.count(ID))
                     continue; // live box: client resizes stay visible
@@ -4432,7 +4436,7 @@ class CHypr3DPassElement final : public IPassElement {
     CHypr3DPassElement(float alpha, float dt) :
         m_alpha(alpha), m_dt(dt) {}
 
-    std::vector<UP<IPassElement>> draw() override {
+    std::vector<UP<IPassElement>> draw(Render::CRenderContext& ctx) override {
         const auto GATE = [&](const std::string& why) {
             g_lastRenderGate = why;
             reportFramebufferErrorOnce(why);
@@ -4445,7 +4449,7 @@ class CHypr3DPassElement final : public IPassElement {
         if (g_pHyprRenderer->type() != Render::IHyprRenderer::RT_GL)
             return GATE("[hypr3d] renderer is not OpenGL");
 
-        auto& renderData = g_pHyprRenderer->m_renderData;
+        auto& renderData = ctx.m_data;
 
         if (!renderData.currentFB)
             return GATE("[hypr3d] current framebuffer is null");
@@ -4520,11 +4524,11 @@ class CHypr3DPassElement final : public IPassElement {
         return {};
     }
 
-    bool needsLiveBlur() override {
+    bool needsLiveBlur(Render::CRenderContext&) override {
         return false;
     }
 
-    bool needsPrecomputeBlur() override {
+    bool needsPrecomputeBlur(Render::CRenderContext&) override {
         return false;
     }
 
@@ -4536,19 +4540,19 @@ class CHypr3DPassElement final : public IPassElement {
         return EK_CUSTOM;
     }
 
-    bool undiscardable() override {
+    bool undiscardable(Render::CRenderContext&) override {
         return true;
     }
 
-    bool disableSimplification() override {
+    bool disableSimplification(Render::CRenderContext&) override {
         return true;
     }
 
-    std::optional<CBox> boundingBox() override {
+    std::optional<CBox> boundingBox(Render::CRenderContext&) override {
         return std::nullopt;
     }
 
-    CRegion opaqueRegion() override {
+    CRegion opaqueRegion(Render::CRenderContext&) override {
         return {};
     }
 
@@ -4677,8 +4681,8 @@ static void dumpStatus() {
 
             out << " surf=" << SURF.x << "," << SURF.y << "," << SURF.w
                 << "," << SURF.h << " reported="
-                << g_resize.window->m_reportedSize.x << ","
-                << g_resize.window->m_reportedSize.y;
+                << g_resize.window->backend().reportedSize().x << ","
+                << g_resize.window->backend().reportedSize().y;
         }
 
         if (ROOMIT != g_roomBoxes.end())
@@ -4813,21 +4817,21 @@ static void dumpStatus() {
             if (!W3 || W3->m_workspace != MON->m_activeWorkspace)
                 continue;
 
-            const auto WB = W3->m_target ? W3->m_target->position() :
+            const auto WB = W3->layoutTarget() ? W3->layoutTarget()->position() :
                                            CBox{};
             out << "  win=" << Compat::windowId(W3)
-                << " float=" << (W3->m_isFloating ? 1 : 0)
+                << " float=" << (W3->isFloating() ? 1 : 0)
                 << " aFull="
-                << W3->alphaValue(Desktop::View::WINDOW_ALPHA_FULLSCREEN)
+                << W3->presentation().alphaValue(Desktop::View::WINDOW_ALPHA_FULLSCREEN)
                 << " aActive="
-                << W3->alphaValue(Desktop::View::WINDOW_ALPHA_ACTIVE)
+                << W3->presentation().alphaValue(Desktop::View::WINDOW_ALPHA_ACTIVE)
                 << " aFade="
-                << W3->alphaValue(Desktop::View::WINDOW_ALPHA_FADE)
+                << W3->presentation().alphaValue(Desktop::View::WINDOW_ALPHA_FADE)
                 << " box=" << WB.x << "," << WB.y << "," << WB.w << ","
                 << WB.h << " lastFloat="
-                << (W3->m_target ? W3->m_target->lastFloatingSize().x : -1.f)
+                << (W3->layoutTarget() ? W3->layoutTarget()->lastFloatingSize().x : -1.f)
                 << "x"
-                << (W3->m_target ? W3->m_target->lastFloatingSize().y : -1.f)
+                << (W3->layoutTarget() ? W3->layoutTarget()->lastFloatingSize().y : -1.f)
                 << "\n";
         }
     }
@@ -5169,7 +5173,7 @@ static void updatePointerVisual() {
     g_scene.setPointer({});
 }
 
-static void onRenderStage(eRenderStage stage) {
+static void onRenderStage(eRenderStage stage, Render::CRenderContext* context = nullptr) {
     if (g_capturing)
         return;
 
@@ -5184,6 +5188,8 @@ static void onRenderStage(eRenderStage stage) {
     // ordinary 2D. Otherwise the room covers everything.
     if (stage != (g_cfgUnderLayers ? RENDER_POST_WINDOWS : RENDER_LAST_MOMENT))
         return;
+
+    g_currentRenderContext = context;
 
     if (!g_currentRenderMon || g_currentRenderMon != g_monitor)
         return;
@@ -5238,14 +5244,14 @@ static void onRenderStage(eRenderStage stage) {
 
     updatePointerVisual();
 
-    g_pHyprRenderer->addPassElement(
-        makeUnique<CHypr3DPassElement>(
-            g_diagAlpha,
-            dt
-        )
-    );
+    if (auto* ctx = g_currentRenderContext)
+        Render::IHyprRenderer::addPassElement(
+            *ctx,
+            makeUnique<CHypr3DPassElement>(g_diagAlpha, dt)
+        );
 
     damageCurrentMonitor();
+    g_currentRenderContext = nullptr;
 }
 
 // --- event handlers ---------------------------------------------------------
@@ -6004,6 +6010,7 @@ static bool isMovementSym(xkb_keysym_t sym) {
         case XKB_KEY_Super_R: return true;
         default: return false;
     }
+
 }
 
 static void setMovementSym(xkb_keysym_t sym, bool down) {
@@ -7000,9 +7007,9 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
 
     static auto renderStage =
         Event::bus()->m_events.render.stage.listen(
-            [](eRenderStage stage) {
+            [](const Event::SRenderStageEvent& event) {
                 try {
-                    onRenderStage(stage);
+                    onRenderStage(event.stage, event.context ? &event.context->get() : nullptr);
                 } catch (const std::exception& e) {
                     dumpErrorNow(std::string{"renderStage: "} + e.what());
                 } catch (...) {
@@ -7092,8 +7099,8 @@ APICALL EXPORT void PLUGIN_EXIT() {
     // while the 3D view was on crashed Hyprland (SIGSEGV in
     // IHyprRenderer::beginRender, measured on 0.56.2). `hyprctl plugin unload`
     // calls this from the event loop, between frames, so the element is done.
-    if (g_pHyprRenderer)
-        g_pHyprRenderer->m_renderPass.removeAllOfType("Hypr3D");
+    // Custom pass elements are owned by the current render context and are
+    // discarded with that frame in Hyprland 0.57.
 
     if (g_deactivateLater && g_pEventLoopManager)
         g_pEventLoopManager->removeDoLater(g_deactivateLater);
@@ -7139,8 +7146,8 @@ APICALL EXPORT void PLUGIN_EXIT() {
     if (const auto MON = targetMonitor(); MON && MON->m_activeWorkspace) {
         for (auto const& W3 : Desktop::windowState()->windows()) {
             if (W3 && W3->m_workspace == MON->m_activeWorkspace &&
-                !W3->m_pinned)
-                *W3->alpha(Desktop::View::WINDOW_ALPHA_FULLSCREEN) = 1.F;
+                !(W3->m_state & Desktop::View::WINDOW_STATE_PINNED))
+                *W3->presentation().alpha(Desktop::View::WINDOW_ALPHA_FULLSCREEN) = 1.F;
         }
     }
 
