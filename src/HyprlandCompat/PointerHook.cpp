@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 #include <dlfcn.h>
+#include <cstring>
 
 namespace H3D::Compat {
 
@@ -125,6 +126,13 @@ void* findFunction(HANDLE handle, const char* query, bool (*match)(const std::st
 }
 
 CFunctionHook* installOne(HANDLE handle, void* target, void* detour, void** original) {
+    // Hyprland builds with CET may start exported functions with ENDBR64.
+    // Its udis86-based hook decoder cannot decode this instruction; leave
+    // it intact and install the jump immediately after it.
+    static constexpr unsigned char ENDBR64[] = {0xf3, 0x0f, 0x1e, 0xfa};
+    if (target && std::memcmp(target, ENDBR64, sizeof(ENDBR64)) == 0)
+        target = static_cast<unsigned char*>(target) + sizeof(ENDBR64);
+
     auto hook = HyprlandAPI::createFunctionHook(handle, target, detour);
 
     if (!hook || !hook->hook())
