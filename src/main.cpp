@@ -6962,13 +6962,13 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
         3000
     );
 
-    if (!HyprlandAPI::addDispatcherV2(PHANDLE, "hypr3d:toggle", dispatchToggle))
+    if (!HyprlandAPI::addDispatcherV2(PHANDLE, "hypr3d_toggle", dispatchToggle))
         throw std::runtime_error("[hypr3d] failed to register toggle dispatcher");
 
-    if (!HyprlandAPI::addDispatcherV2(PHANDLE, "hypr3d:open", dispatchOpen))
+    if (!HyprlandAPI::addDispatcherV2(PHANDLE, "hypr3d_open", dispatchOpen))
         throw std::runtime_error("[hypr3d] failed to register open dispatcher");
 
-    if (!HyprlandAPI::addDispatcherV2(PHANDLE, "hypr3d:close", dispatchClose))
+    if (!HyprlandAPI::addDispatcherV2(PHANDLE, "hypr3d_close", dispatchClose))
         throw std::runtime_error("[hypr3d] failed to register close dispatcher");
 
     if (!HyprlandAPI::addLuaFunction(PHANDLE, "hypr3d", "toggle", luaToggle))
