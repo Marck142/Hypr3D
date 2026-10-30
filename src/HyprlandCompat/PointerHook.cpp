@@ -143,10 +143,14 @@ bool installPointerHook(HANDLE handle, MotionSink sink) {
     if (g_moveHook)
         return true;
 
-    void* target = findFunction(handle, "CPointerManager::move", isPointerMove);
-
-    if (!target)
-        target = findFunction(handle, "CPointerManager4move", isPointerMove);
+    // findFunctionsByName searches the mangled symbol table. Passing the
+    // demangled C++ spelling (CPointerManager::move) therefore returns no
+    // matches on Hyprland 0.57 even though the symbol is exported.
+    void* target = findFunction(
+        handle,
+        "_ZN7Pointer15CPointerManager4move",
+        isPointerMove
+    );
 
     if (!target)
         return false;
@@ -165,8 +169,16 @@ bool installPointerHook(HANDLE handle, MotionSink sink) {
     // Optional cursor gates: without them the cursor cannot be hidden
     // reliably (clients would re-apply their images), which is fine -- the
     // view just keeps the frozen cursor.
-    void* surfTarget = findFunction(handle, "setCursorSurface", isSetCursorSurface);
-    void* bufTarget  = findFunction(handle, "setCursorBuffer", isSetCursorBuffer);
+    void* surfTarget = findFunction(
+        handle,
+        "_ZN7Pointer15CPointerManager16setCursorSurface",
+        isSetCursorSurface
+    );
+    void* bufTarget = findFunction(
+        handle,
+        "_ZN7Pointer15CPointerManager15setCursorBuffer",
+        isSetCursorBuffer
+    );
 
     if (surfTarget && bufTarget) {
         g_surfHook = installOne(handle, surfTarget, (void*)&hkPMSetCursorSurface, (void**)&g_surfOriginal);
