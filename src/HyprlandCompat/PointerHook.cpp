@@ -7,6 +7,7 @@
 
 #include <string>
 #include <vector>
+#include <dlfcn.h>
 
 namespace H3D::Compat {
 
@@ -146,11 +147,9 @@ bool installPointerHook(HANDLE handle, MotionSink sink) {
     // findFunctionsByName searches the mangled symbol table. Passing the
     // demangled C++ spelling (CPointerManager::move) therefore returns no
     // matches on Hyprland 0.57 even though the symbol is exported.
-    void* target = findFunction(
-        handle,
-        "_ZN7Pointer15CPointerManager4move",
-        isPointerMove
-    );
+    void* target = dlsym(RTLD_DEFAULT, "_ZN7Pointer15CPointerManager4moveERKN9Hyprutils4Math8Vector2DE");
+    if (!target)
+        target = findFunction(handle, "CPointerManager4move", isPointerMove);
 
     if (!target)
         return false;
@@ -169,16 +168,12 @@ bool installPointerHook(HANDLE handle, MotionSink sink) {
     // Optional cursor gates: without them the cursor cannot be hidden
     // reliably (clients would re-apply their images), which is fine -- the
     // view just keeps the frozen cursor.
-    void* surfTarget = findFunction(
-        handle,
-        "_ZN7Pointer15CPointerManager16setCursorSurface",
-        isSetCursorSurface
-    );
-    void* bufTarget = findFunction(
-        handle,
-        "_ZN7Pointer15CPointerManager15setCursorBuffer",
-        isSetCursorBuffer
-    );
+    void* surfTarget = dlsym(RTLD_DEFAULT, "_ZN7Pointer15CPointerManager16setCursorSurfaceEN9Hyprutils6Memory14CSharedPointerIN7Desktop4View10CWLSurfaceEEERKNS1_4Math8Vector2DE");
+    void* bufTarget = dlsym(RTLD_DEFAULT, "_ZN7Pointer15CPointerManager15setCursorBufferEN9Hyprutils6Memory14CSharedPointerIN10Aquamarine7IBufferEEERKNS1_4Math8Vector2DERKf");
+    if (!surfTarget)
+        surfTarget = findFunction(handle, "CPointerManager16setCursorSurface", isSetCursorSurface);
+    if (!bufTarget)
+        bufTarget = findFunction(handle, "CPointerManager15setCursorBuffer", isSetCursorBuffer);
 
     if (surfTarget && bufTarget) {
         g_surfHook = installOne(handle, surfTarget, (void*)&hkPMSetCursorSurface, (void**)&g_surfOriginal);
