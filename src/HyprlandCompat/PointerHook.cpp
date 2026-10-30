@@ -3,6 +3,7 @@
 #include <hyprland/src/plugins/HookSystem.hpp>
 #include <hyprland/src/desktop/view/WLSurface.hpp>
 #include <hyprland/src/pointer/PointerManager.hpp>
+#include <hyprland/src/render/Renderer.hpp>
 
 #include <string>
 #include <vector>
@@ -208,10 +209,15 @@ bool pointerHookActive() {
 }
 
 bool setCursorHidden(bool hidden) {
-    if (hidden && !g_cursorHooks)
-        return false; // cannot guarantee the cursor stays hidden
-
     g_cursorHidden = hidden;
+
+    // Hyprland 0.57 can hide the software cursor through the renderer even
+    // when the optional pointer-manager hooks are unavailable. The hooks are
+    // still used to swallow relative motion and cursor image updates when
+    // present, but cursor visibility must not depend on them.
+    if (g_pHyprRenderer)
+        g_pHyprRenderer->setCursorHidden(hidden);
+
     return true;
 }
 
